@@ -8,16 +8,18 @@ import (
 	"time"
 
 	"github.com/lizhening/WtfBackup/config"
+	"github.com/lizhening/WtfBackup/pkg/fileutil"
+	"github.com/lizhening/WtfBackup/pkg/logger"
 )
 
 // BackupWtf 备份WTF文件夹
-func BackupWtf(cfg config.Config) error {
+func BackupWtf(cfg config.Config, fileOp fileutil.FileOperator, showProgress bool) error {
 	// 验证WTF文件夹存在
-	wtfInfo, err := os.Stat(cfg.WtfPath)
+	info, err := os.Stat(cfg.WtfPath)
 	if err != nil {
 		return fmt.Errorf("无法访问WTF文件夹: %w", err)
 	}
-	if !wtfInfo.IsDir() {
+	if !info.IsDir() {
 		return fmt.Errorf("%s 不是一个文件夹", cfg.WtfPath)
 	}
 
@@ -27,14 +29,13 @@ func BackupWtf(cfg config.Config) error {
 	backupPath := filepath.Join(cfg.BackupDir, backupName)
 
 	// 创建备份文件夹
-	err = os.MkdirAll(backupPath, 0755)
-	if err != nil {
+	if err := fileOp.EnsureDir(backupPath); err != nil {
 		return fmt.Errorf("创建备份文件夹失败: %w", err)
 	}
 
 	// 开始复制文件
-	fmt.Printf("开始备份WTF文件夹到: %s\n", backupPath)
-	err = copyDir(cfg.WtfPath, backupPath)
+	logger.Info("开始备份WTF文件夹到: %s", backupPath)
+	err = fileOp.CopyDir(cfg.WtfPath, backupPath, showProgress)
 	if err != nil {
 		return fmt.Errorf("备份过程中出错: %w", err)
 	}

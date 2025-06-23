@@ -8,15 +8,24 @@ import (
 
 	"github.com/lizhening/WtfBackup/backup"
 	"github.com/lizhening/WtfBackup/config"
+	"github.com/lizhening/WtfBackup/pkg/fileutil"
+	"github.com/lizhening/WtfBackup/pkg/logger"
 	"github.com/lizhening/WtfBackup/restore"
 )
 
 func main() {
+	// 初始化日志系统
+	log := logger.NewLogger(logger.LogLevelInfo, os.Stdout, "WTF-Backup")
+	logger.SetDefaultLogger(log)
+
+	// 初始化文件操作器
+	fileOp := fileutil.NewDefaultFileOperator(32 * 1024) // 32KB buffer
+
 	// 先加载配置文件
 	configPath := config.DefaultConfigPath()
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
-		fmt.Printf("加载配置文件失败: %v\n", err)
+		logger.Error("加载配置文件失败: %v", err)
 		os.Exit(1)
 	}
 
@@ -28,11 +37,14 @@ func main() {
 	// 备份命令参数 - 可选，如果不提供将使用配置文件中的设置
 	wtfPath := backupCmd.String("wtf", cfg.WtfPath, "WTF文件夹路径 (可选，默认使用配置文件)")
 	backupDir := backupCmd.String("backup", cfg.BackupDir, "备份保存的文件夹路径 (可选，默认使用配置文件)")
+	showProgress := backupCmd.Bool("progress", true, "显示进度条")
+	keepBackups := backupCmd.Int("keep", 5, "保留的备份数量")
 
 	// 恢复命令参数
 	restoreWtfPath := restoreCmd.String("wtf", cfg.WtfPath, "要恢复到的WTF文件夹路径 (可选，默认使用配置文件)")
 	restoreBackupDir := restoreCmd.String("backup", cfg.BackupDir, "备份文件夹路径 (可选，默认使用配置文件)")
 	addonName := restoreCmd.String("addon", "", "要恢复的插件名称 (可选，如不提供则恢复配置中的所有插件)")
+	restoreShowProgress := restoreCmd.Bool("progress", true, "显示进度条")
 
 	// 配置命令参数
 	configWtfPath := configCmd.String("wtf", "", "设置WTF文件夹路径")
@@ -61,22 +73,31 @@ func main() {
 
 		// 保存更新后的配置
 		if err := config.SaveConfig(cfg, configPath); err != nil {
-			fmt.Printf("保存配置文件失败: %v\n", err)
+			logger.Error("保存配置文件失败: %v", err)
 		}
 
 		if cfg.WtfPath == "" || cfg.BackupDir == "" {
-			fmt.Println("Error: 必须提供WTF文件夹路径和备份路径，可以通过命令行参数或配置文件设置")
+			logger.Error("必须提供WTF文件夹路径和备份路径，可以通过命令行参数或配置文件设置")
 			backupCmd.PrintDefaults()
 			os.Exit(1)
 		}
 
 		// 执行备份
-		err := backup.BackupWtf(*cfg)
+		logger.Info("开始备份WTF文件夹...")
+		err := backup.BackupWtf(*cfg, fileOp, *showProgress)
 		if err != nil {
-			fmt.Printf("备份失败: %v\n", err)
+			logger.Error("备份失败: %v", err)
 			os.Exit(1)
 		}
-		fmt.Println("备份成功完成!")
+		logger.Info("备份成功完成!")
+
+		// 清理旧备份
+		if *keepBackups > 0 {
+			logger.Info("清理旧备份...")
+			if err := fileOp.CleanOldBackups(cfg.BackupDir, *keepBackups); err != nil {
+				logger.Error("清理旧备份失败: %v", err)
+			}
+		}
 
 	case "restore":
 		restoreCmd.Parse(os.Args[2:])
@@ -90,39 +111,40 @@ func main() {
 
 		// 保存更新后的配置
 		if err := config.SaveConfig(cfg, configPath); err != nil {
-			fmt.Printf("保存配置文件失败: %v\n", err)
+			logger.Error("保存配置文件失败: %v", err)
 		}
 
 		if cfg.WtfPath == "" || cfg.BackupDir == "" {
-			fmt.Println("Error: 必须提供WTF文件夹路径和备份路径，可以通过命令行参数或配置文件设置")
+			logger.Error("必须提供WTF文件夹路径和备份路径，可以通过命令行参数或配置文件设置")
 			restoreCmd.PrintDefaults()
 			os.Exit(1)
 		}
 
 		// 如果提供了插件名，则只恢复该插件
 		if *addonName != "" {
-			err := restore.RestoreAddon(*cfg, *addonName)
+			logger.Info("开始恢复插件 %s...", *addonName)
+			err := restore.RestoreAddon(*cfg, *addonName, fileOp, *restoreShowProgress)
 			if err != nil {
-				fmt.Printf("恢复插件 %s 失败: %v\n", *addonName, err)
+				logger.Error("恢复插件 %s 失败: %v", *addonName, err)
 				os.Exit(1)
 			}
-			fmt.Printf("插件 %s 恢复成功完成!\n", *addonName)
+			logger.Info("插件 %s 恢复成功完成!", *addonName)
 		} else if len(cfg.Addons) > 0 {
 			// 恢复配置中的所有插件
-			fmt.Printf("将恢复配置中的 %d 个插件\n", len(cfg.Addons))
+			logger.Info("将恢复配置中的 %d 个插件", len(cfg.Addons))
 			for _, addon := range cfg.Addons {
-				fmt.Printf("恢复插件: %s\n", addon)
-				err := restore.RestoreAddon(*cfg, addon)
+				logger.Info("恢复插件: %s", addon)
+				err := restore.RestoreAddon(*cfg, addon, fileOp, *restoreShowProgress)
 				if err != nil {
-					fmt.Printf("恢复插件 %s 失败: %v\n", addon, err)
+					logger.Error("恢复插件 %s 失败: %v", addon, err)
 					// 继续恢复其他插件
 				} else {
-					fmt.Printf("插件 %s 恢复成功!\n", addon)
+					logger.Info("插件 %s 恢复成功!", addon)
 				}
 			}
-			fmt.Println("所有插件恢复操作完成!")
+			logger.Info("所有插件恢复操作完成!")
 		} else {
-			fmt.Println("Error: 必须提供要恢复的插件名称，或在配置文件中配置插件列表")
+			logger.Error("必须提供要恢复的插件名称，或在配置文件中配置插件列表")
 			restoreCmd.PrintDefaults()
 			os.Exit(1)
 		}
@@ -133,13 +155,13 @@ func main() {
 		// 更新WTF路径
 		if *configWtfPath != "" {
 			cfg.WtfPath = config.NormalizePath(*configWtfPath)
-			fmt.Printf("已设置WTF路径: %s\n", cfg.WtfPath)
+			logger.Info("已设置WTF路径: %s", cfg.WtfPath)
 		}
 
 		// 更新备份路径
 		if *configBackupDir != "" {
 			cfg.BackupDir = config.NormalizePath(*configBackupDir)
-			fmt.Printf("已设置备份路径: %s\n", cfg.BackupDir)
+			logger.Info("已设置备份路径: %s", cfg.BackupDir)
 		}
 
 		// 添加插件
@@ -162,9 +184,9 @@ func main() {
 
 				if !exists {
 					cfg.Addons = append(cfg.Addons, addon)
-					fmt.Printf("已添加插件: %s\n", addon)
+					logger.Info("已添加插件: %s", addon)
 				} else {
-					fmt.Printf("插件 %s 已在列表中\n", addon)
+					logger.Info("插件 %s 已在列表中", addon)
 				}
 			}
 		}
@@ -182,7 +204,7 @@ func main() {
 				for i, a := range cfg.Addons {
 					if a == addon {
 						cfg.Addons = append(cfg.Addons[:i], cfg.Addons[i+1:]...)
-						fmt.Printf("已移除插件: %s\n", addon)
+						logger.Info("已移除插件: %s", addon)
 						break
 					}
 				}
@@ -191,22 +213,22 @@ func main() {
 
 		// 保存配置
 		if err := config.SaveConfig(cfg, configPath); err != nil {
-			fmt.Printf("保存配置文件失败: %v\n", err)
+			logger.Error("保存配置文件失败: %v", err)
 			os.Exit(1)
 		}
 
 		// 显示当前配置
 		if *configShowFlag || (*configWtfPath == "" && *configBackupDir == "" && *configAddAddons == "" && *configRemoveAddons == "") {
-			fmt.Println("\n当前配置:")
-			fmt.Printf("配置文件路径: %s\n", configPath)
-			fmt.Printf("WTF文件夹路径: %s\n", cfg.WtfPath)
-			fmt.Printf("备份文件夹路径: %s\n", cfg.BackupDir)
-			fmt.Println("插件列表:")
+			logger.Info("\n当前配置:")
+			logger.Info("配置文件路径: %s", configPath)
+			logger.Info("WTF文件夹路径: %s", cfg.WtfPath)
+			logger.Info("备份文件夹路径: %s", cfg.BackupDir)
+			logger.Info("插件列表:")
 			if len(cfg.Addons) == 0 {
-				fmt.Println("  (无)")
+				logger.Info("  (无)")
 			} else {
 				for _, addon := range cfg.Addons {
-					fmt.Printf("  - %s\n", addon)
+					logger.Info("  - %s", addon)
 				}
 			}
 		}
@@ -221,9 +243,9 @@ func printUsage() {
 	fmt.Println("WTF备份工具 - 备份和恢复魔兽世界的WTF文件夹")
 	fmt.Println("\n用法:")
 	fmt.Println("  backup: 备份WTF文件夹")
-	fmt.Printf("    %s backup [-wtf <WTF文件夹路径>] [-backup <备份文件夹路径>]\n", os.Args[0])
+	fmt.Printf("    %s backup [-wtf <WTF文件夹路径>] [-backup <备份文件夹路径>] [-progress] [-keep <保留备份数量>]\n", os.Args[0])
 	fmt.Println("  restore: 从备份中恢复插件配置")
-	fmt.Printf("    %s restore [-wtf <WTF文件夹路径>] [-backup <备份文件夹路径>] [-addon <插件名称>]\n", os.Args[0])
+	fmt.Printf("    %s restore [-wtf <WTF文件夹路径>] [-backup <备份文件夹路径>] [-addon <插件名称>] [-progress]\n", os.Args[0])
 	fmt.Println("  config: 配置设置")
 	fmt.Printf("    %s config [-wtf <WTF文件夹路径>] [-backup <备份文件夹路径>] [-add-addons <插件1,插件2...>] [-remove-addons <插件1,插件2...>] [-show]\n", os.Args[0])
 }

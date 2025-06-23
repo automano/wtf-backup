@@ -1,6 +1,7 @@
-wtf_path: C:/Program Files/World of Warcraft/_retail_/WTF
-backup_dir: D:/WoW_Backups
+wtf_path: C:\Program Files\World of Warcraft\_retail_\WTF
+backup_dir: D:\Record\WoW_Backup
 addons:
-    - DBM-Core
-    - ElvUI
-    - WeakAuras
+    - MRT
+    - OmniCC
+    - OmniCD
+    - NDui
